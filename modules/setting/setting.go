@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"math"
 	"net"
 	"net/url"
 	"os"
@@ -24,13 +25,11 @@ import (
 	"code.gitea.io/gitea/modules/generate"
 	"code.gitea.io/gitea/modules/git"
 	"code.gitea.io/gitea/modules/log"
-	_ "code.gitea.io/gitea/modules/minwinsvc" // import minwinsvc for windows services
 	"code.gitea.io/gitea/modules/user"
 
-	"github.com/Unknwon/cae/zip"
-	"github.com/Unknwon/com"
 	shellquote "github.com/kballard/go-shellquote"
 	version "github.com/mcuadros/go-version"
+	"github.com/unknwon/com"
 	ini "gopkg.in/ini.v1"
 	"strk.kbt.io/projects/go/libravatar"
 )
@@ -43,6 +42,7 @@ const (
 	HTTP       Scheme = "http"
 	HTTPS      Scheme = "https"
 	FCGI       Scheme = "fcgi"
+	FCGIUnix   Scheme = "fcgi+unix"
 	UnixSocket Scheme = "unix"
 )
 
@@ -54,6 +54,7 @@ const (
 	LandingPageHome          LandingPage = "/"
 	LandingPageExplore       LandingPage = "/explore"
 	LandingPageOrganizations LandingPage = "/explore/organizations"
+	LandingPageLogin         LandingPage = "/user/login"
 )
 
 // enumerates all the types of captchas
@@ -87,6 +88,7 @@ var (
 	CertFile             string
 	KeyFile              string
 	StaticRootPath       string
+	StaticCacheTime      time.Duration
 	EnableGzip           bool
 	LandingPageURL       LandingPage
 	UnixSocketPermission uint32
@@ -96,6 +98,10 @@ var (
 	LetsEncryptTOS       bool
 	LetsEncryptDirectory string
 	LetsEncryptEmail     string
+	GracefulRestartable  bool
+	GracefulHammerTime   time.Duration
+	StartupTimeout       time.Duration
+	StaticURLPrefix      string
 
 	SSH = struct {
 		Disabled                 bool           `ini:"DISABLE_SSH"`
@@ -125,6 +131,7 @@ var (
 		ServerKeyExchanges: []string{"diffie-hellman-group1-sha1", "diffie-hellman-group14-sha1", "ecdh-sha2-nistp256", "ecdh-sha2-nistp384", "ecdh-sha2-nistp521", "curve25519-sha256@libssh.org"},
 		ServerMACs:         []string{"hmac-sha2-256-etm@openssh.com", "hmac-sha2-256", "hmac-sha1", "hmac-sha1-96"},
 		KeygenPath:         "ssh-keygen",
+		MinimumKeySizes:    map[string]int{"ed25519": 256, "ecdsa": 256, "rsa": 2048, "dsa": 1024},
 	}
 
 	LFS struct {
@@ -133,46 +140,52 @@ var (
 		JWTSecretBase64 string        `ini:"LFS_JWT_SECRET"`
 		JWTSecretBytes  []byte        `ini:"-"`
 		HTTPAuthExpiry  time.Duration `ini:"LFS_HTTP_AUTH_EXPIRY"`
+		MaxFileSize     int64         `ini:"LFS_MAX_FILE_SIZE"`
+		LocksPagingNum  int           `ini:"LFS_LOCKS_PAGING_NUM"`
 	}
 
 	// Security settings
-	InstallLock           bool
-	SecretKey             string
-	LogInRememberDays     int
-	CookieUserName        string
-	CookieRememberName    string
-	ReverseProxyAuthUser  string
-	ReverseProxyAuthEmail string
-	MinPasswordLength     int
-	ImportLocalPaths      bool
-	DisableGitHooks       bool
-	PasswordHashAlgo      string
-
-	// Database settings
-	UseSQLite3       bool
-	UseMySQL         bool
-	UseMSSQL         bool
-	UsePostgreSQL    bool
-	UseTiDB          bool
-	LogSQL           bool
-	DBConnectRetries int
-	DBConnectBackoff time.Duration
+	InstallLock                        bool
+	SecretKey                          string
+	LogInRememberDays                  int
+	CookieUserName                     string
+	CookieRememberName                 string
+	ReverseProxyAuthUser               string
+	ReverseProxyAuthEmail              string
+	MinPasswordLength                  int
+	ImportLocalPaths                   bool
+	DisableGitHooks                    bool
+	OnlyAllowPushIfGiteaEnvironmentSet bool
+	PasswordComplexity                 []string
+	PasswordHashAlgo                   string
 
 	// UI settings
 	UI = struct {
-		ExplorePagingNum    int
-		IssuePagingNum      int
-		RepoSearchPagingNum int
-		FeedMaxCommitNum    int
-		GraphMaxCommitNum   int
-		CodeCommentLines    int
-		ReactionMaxUserNum  int
-		ThemeColorMetaTag   string
-		MaxDisplayFileSize  int64
-		ShowUserEmail       bool
-		DefaultShowFullName bool
-		DefaultTheme        string
-		Themes              []string
+		ExplorePagingNum      int
+		IssuePagingNum        int
+		RepoSearchPagingNum   int
+		MembersPagingNum      int
+		FeedMaxCommitNum      int
+		GraphMaxCommitNum     int
+		CodeCommentLines      int
+		ReactionMaxUserNum    int
+		ThemeColorMetaTag     string
+		MaxDisplayFileSize    int64
+		ShowUserEmail         bool
+		DefaultShowFullName   bool
+		DefaultTheme          string
+		Themes                []string
+		Reactions             []string
+		ReactionsMap          map[string]bool
+		SearchRepoDescription bool
+		UseServiceWorker      bool
+
+		Notification struct {
+			MinTimeout            time.Duration
+			TimeoutStep           time.Duration
+			MaxTimeout            time.Duration
+			EventSourceUpdateTime time.Duration
+		} `ini:"ui.notification"`
 
 		Admin struct {
 			UserPagingNum   int
@@ -192,6 +205,7 @@ var (
 		ExplorePagingNum:    20,
 		IssuePagingNum:      10,
 		RepoSearchPagingNum: 10,
+		MembersPagingNum:    20,
 		FeedMaxCommitNum:    5,
 		GraphMaxCommitNum:   100,
 		CodeCommentLines:    4,
@@ -200,6 +214,18 @@ var (
 		MaxDisplayFileSize:  8388608,
 		DefaultTheme:        `gitea`,
 		Themes:              []string{`gitea`, `arc-green`},
+		Reactions:           []string{`+1`, `-1`, `laugh`, `hooray`, `confused`, `heart`, `rocket`, `eyes`},
+		Notification: struct {
+			MinTimeout            time.Duration
+			TimeoutStep           time.Duration
+			MaxTimeout            time.Duration
+			EventSourceUpdateTime time.Duration
+		}{
+			MinTimeout:            10 * time.Second,
+			TimeoutStep:           10 * time.Second,
+			MaxTimeout:            60 * time.Second,
+			EventSourceUpdateTime: 10 * time.Second,
+		},
 		Admin: struct {
 			UserPagingNum   int
 			RepoPagingNum   int
@@ -229,17 +255,20 @@ var (
 
 	// Markdown settings
 	Markdown = struct {
-		EnableHardLineBreak bool
-		CustomURLSchemes    []string `ini:"CUSTOM_URL_SCHEMES"`
-		FileExtensions      []string
+		EnableHardLineBreakInComments  bool
+		EnableHardLineBreakInDocuments bool
+		CustomURLSchemes               []string `ini:"CUSTOM_URL_SCHEMES"`
+		FileExtensions                 []string
 	}{
-		EnableHardLineBreak: false,
-		FileExtensions:      strings.Split(".md,.markdown,.mdown,.mkd", ","),
+		EnableHardLineBreakInComments:  true,
+		EnableHardLineBreakInDocuments: false,
+		FileExtensions:                 strings.Split(".md,.markdown,.mdown,.mkd", ","),
 	}
 
 	// Admin settings
 	Admin struct {
 		DisableRegularOrgCreation bool
+		DefaultEmailNotification  string
 	}
 
 	// Picture settings
@@ -278,6 +307,8 @@ var (
 
 	// Time settings
 	TimeFormat string
+	// UILocation is the location on the UI, so that we can display the time on UI.
+	DefaultUILocation = time.Local
 
 	CSRFCookieName     = "_csrf"
 	CSRFCookieHTTPOnly = true
@@ -312,11 +343,13 @@ var (
 		InvalidateRefreshTokens    bool
 		JWTSecretBytes             []byte `ini:"-"`
 		JWTSecretBase64            string `ini:"JWT_SECRET"`
+		MaxTokenLength             int
 	}{
 		Enable:                     true,
 		AccessTokenExpirationTime:  3600,
 		RefreshTokenExpirationTime: 730,
 		InvalidateRefreshTokens:    false,
+		MaxTokenLength:             math.MaxInt16,
 	}
 
 	U2F = struct {
@@ -334,9 +367,8 @@ var (
 	}
 
 	// I18n settings
-	Langs     []string
-	Names     []string
-	dateLangs map[string]string
+	Langs []string
+	Names []string
 
 	// Highlight settings are loaded in modules/template/highlight.go
 
@@ -346,30 +378,20 @@ var (
 	ShowFooterTemplateLoadTime bool
 
 	// Global setting objects
-	Cfg               *ini.File
-	CustomPath        string // Custom directory path
-	CustomConf        string
-	CustomPID         string
-	ProdMode          bool
-	RunUser           string
-	IsWindows         bool
-	HasRobotsTxt      bool
-	InternalToken     string // internal access token
-	IterateBufferSize int
+	Cfg           *ini.File
+	CustomPath    string // Custom directory path
+	CustomConf    string
+	CustomPID     string
+	ProdMode      bool
+	RunUser       string
+	IsWindows     bool
+	HasRobotsTxt  bool
+	InternalToken string // internal access token
 
 	// UILocation is the location on the UI, so that we can display the time on UI.
 	// Currently only show the default time.Local, it could be added to app.ini after UI is ready
 	UILocation = time.Local
 )
-
-// DateLang transforms standard language locale name to corresponding value in datetime plugin.
-func DateLang(lang string) string {
-	name, ok := dateLangs[lang]
-	if ok {
-		return name
-	}
-	return "en"
-}
 
 func getAppPath() (string, error) {
 	var appPath string
@@ -503,6 +525,7 @@ func SetCustomPathAndConf(providedCustom, providedConf, providedWorkPath string)
 		CustomConf = path.Join(CustomPath, "conf/app.ini")
 	} else if !filepath.IsAbs(CustomConf) {
 		CustomConf = path.Join(CustomPath, CustomConf)
+		log.Warn("Using 'custom' directory as relative origin for configuration file: '%s'", CustomConf)
 	}
 }
 
@@ -522,7 +545,7 @@ func NewContext() {
 	} else {
 		log.Warn("Custom config '%s' not found, ignore this if you're running first time", CustomConf)
 	}
-	Cfg.NameMapper = ini.AllCapsUnderscore
+	Cfg.NameMapper = ini.SnackCase
 
 	homeDir, err := com.HomeDir()
 	if err != nil {
@@ -546,8 +569,22 @@ func NewContext() {
 		Protocol = HTTPS
 		CertFile = sec.Key("CERT_FILE").String()
 		KeyFile = sec.Key("KEY_FILE").String()
+		if !filepath.IsAbs(CertFile) && len(CertFile) > 0 {
+			CertFile = filepath.Join(CustomPath, CertFile)
+		}
+		if !filepath.IsAbs(KeyFile) && len(KeyFile) > 0 {
+			KeyFile = filepath.Join(CustomPath, KeyFile)
+		}
 	case "fcgi":
 		Protocol = FCGI
+	case "fcgi+unix":
+		Protocol = FCGIUnix
+		UnixSocketPermissionRaw := sec.Key("UNIX_SOCKET_PERMISSION").MustString("666")
+		UnixSocketPermissionParsed, err := strconv.ParseUint(UnixSocketPermissionRaw, 8, 32)
+		if err != nil || UnixSocketPermissionParsed > 0777 {
+			log.Fatal("Failed to parse unixSocketPermission: %s", UnixSocketPermissionRaw)
+		}
+		UnixSocketPermission = uint32(UnixSocketPermissionParsed)
 	case "unix":
 		Protocol = UnixSocket
 		UnixSocketPermissionRaw := sec.Key("UNIX_SOCKET_PERMISSION").MustString("666")
@@ -568,13 +605,16 @@ func NewContext() {
 	Domain = sec.Key("DOMAIN").MustString("localhost")
 	HTTPAddr = sec.Key("HTTP_ADDR").MustString("0.0.0.0")
 	HTTPPort = sec.Key("HTTP_PORT").MustString("3000")
+	GracefulRestartable = sec.Key("ALLOW_GRACEFUL_RESTARTS").MustBool(true)
+	GracefulHammerTime = sec.Key("GRACEFUL_HAMMER_TIME").MustDuration(60 * time.Second)
+	StartupTimeout = sec.Key("STARTUP_TIMEOUT").MustDuration(0 * time.Second)
 
 	defaultAppURL := string(Protocol) + "://" + Domain
 	if (Protocol == HTTP && HTTPPort != "80") || (Protocol == HTTPS && HTTPPort != "443") {
 		defaultAppURL += ":" + HTTPPort
 	}
 	AppURL = sec.Key("ROOT_URL").MustString(defaultAppURL)
-	AppURL = strings.TrimRight(AppURL, "/") + "/"
+	AppURL = strings.TrimSuffix(AppURL, "/") + "/"
 
 	// Check if has app suburl.
 	appURL, err := url.Parse(AppURL)
@@ -584,6 +624,7 @@ func NewContext() {
 	// Suburl should start with '/' and end without '/', such as '/{subpath}'.
 	// This value is empty if site does not have sub-url.
 	AppSubURL = strings.TrimSuffix(appURL.Path, "/")
+	StaticURLPrefix = strings.TrimSuffix(sec.Key("STATIC_URL_PREFIX").MustString(AppSubURL), "/")
 	AppSubURLDepth = strings.Count(AppSubURL, "/")
 	// Check if Domain differs from AppURL domain than update it to AppURL's domain
 	// TODO: Can be replaced with url.Hostname() when minimal GoLang version is 1.8
@@ -597,6 +638,8 @@ func NewContext() {
 	case UnixSocket:
 		defaultLocalURL = "http://unix/"
 	case FCGI:
+		defaultLocalURL = AppURL
+	case FCGIUnix:
 		defaultLocalURL = AppURL
 	default:
 		defaultLocalURL = string(Protocol) + "://"
@@ -613,6 +656,7 @@ func NewContext() {
 	OfflineMode = sec.Key("OFFLINE_MODE").MustBool()
 	DisableRouterLog = sec.Key("DISABLE_ROUTER_LOG").MustBool()
 	StaticRootPath = sec.Key("STATIC_ROOT_PATH").MustString(AppWorkPath)
+	StaticCacheTime = sec.Key("STATIC_CACHE_TIME").MustDuration(6 * time.Hour)
 	AppDataPath = sec.Key("APP_DATA_PATH").MustString(path.Join(AppWorkPath, "data"))
 	EnableGzip = sec.Key("ENABLE_GZIP").MustBool()
 	EnablePprof = sec.Key("ENABLE_PPROF").MustBool(false)
@@ -626,6 +670,8 @@ func NewContext() {
 		LandingPageURL = LandingPageExplore
 	case "organizations":
 		LandingPageURL = LandingPageOrganizations
+	case "login":
+		LandingPageURL = LandingPageLogin
 	default:
 		LandingPageURL = LandingPageHome
 	}
@@ -669,11 +715,12 @@ func NewContext() {
 	}
 
 	SSH.MinimumKeySizeCheck = sec.Key("MINIMUM_KEY_SIZE_CHECK").MustBool()
-	SSH.MinimumKeySizes = map[string]int{}
 	minimumKeySizes := Cfg.Section("ssh.minimum_key_sizes").Keys()
 	for _, key := range minimumKeySizes {
 		if key.MustInt() != -1 {
 			SSH.MinimumKeySizes[strings.ToLower(key.Name())] = key.MustInt()
+		} else {
+			delete(SSH.MinimumKeySizes, strings.ToLower(key.Name()))
 		}
 	}
 	SSH.AuthorizedKeysBackup = sec.Key("SSH_AUTHORIZED_KEYS_BACKUP").MustBool(true)
@@ -688,14 +735,13 @@ func NewContext() {
 	if !filepath.IsAbs(LFS.ContentPath) {
 		LFS.ContentPath = filepath.Join(AppWorkPath, LFS.ContentPath)
 	}
+	if LFS.LocksPagingNum == 0 {
+		LFS.LocksPagingNum = 50
+	}
 
 	LFS.HTTPAuthExpiry = sec.Key("LFS_HTTP_AUTH_EXPIRY").MustDuration(20 * time.Minute)
 
 	if LFS.StartServer {
-		if err := os.MkdirAll(LFS.ContentPath, 0700); err != nil {
-			log.Fatal("Failed to create '%s': %v", LFS.ContentPath, err)
-		}
-
 		LFS.JWTSecretBytes = make([]byte, 32)
 		n, err := base64.RawURLEncoding.Decode(LFS.JWTSecretBytes, []byte(LFS.JWTSecretBase64))
 
@@ -762,6 +808,9 @@ func NewContext() {
 		}
 	}
 
+	sec = Cfg.Section("admin")
+	Admin.DefaultEmailNotification = sec.Key("DEFAULT_EMAIL_NOTIFICATIONS").MustString("enabled")
+
 	sec = Cfg.Section("security")
 	InstallLock = sec.Key("INSTALL_LOCK").MustBool(false)
 	SecretKey = sec.Key("SECRET_KEY").MustString("!#@FDEWREWR&*(")
@@ -773,14 +822,20 @@ func NewContext() {
 	MinPasswordLength = sec.Key("MIN_PASSWORD_LENGTH").MustInt(6)
 	ImportLocalPaths = sec.Key("IMPORT_LOCAL_PATHS").MustBool(false)
 	DisableGitHooks = sec.Key("DISABLE_GIT_HOOKS").MustBool(false)
+	OnlyAllowPushIfGiteaEnvironmentSet = sec.Key("ONLY_ALLOW_PUSH_IF_GITEA_ENVIRONMENT_SET").MustBool(true)
 	PasswordHashAlgo = sec.Key("PASSWORD_HASH_ALGO").MustString("pbkdf2")
 	CSRFCookieHTTPOnly = sec.Key("CSRF_COOKIE_HTTP_ONLY").MustBool(true)
 
 	InternalToken = loadInternalToken(sec)
-	IterateBufferSize = Cfg.Section("database").Key("ITERATE_BUFFER_SIZE").MustInt(50)
-	LogSQL = Cfg.Section("database").Key("LOG_SQL").MustBool(true)
-	DBConnectRetries = Cfg.Section("database").Key("DB_RETRIES").MustInt(10)
-	DBConnectBackoff = Cfg.Section("database").Key("DB_RETRY_BACKOFF").MustDuration(3 * time.Second)
+
+	cfgdata := sec.Key("PASSWORD_COMPLEXITY").Strings(",")
+	PasswordComplexity = make([]string, 0, len(cfgdata))
+	for _, name := range cfgdata {
+		name := strings.ToLower(strings.Trim(name, `"`))
+		if name != "" {
+			PasswordComplexity = append(PasswordComplexity, name)
+		}
+	}
 
 	sec = Cfg.Section("attachment")
 	AttachmentPath = sec.Key("PATH").MustString(path.Join(AppDataPath, "attachments"))
@@ -792,32 +847,48 @@ func NewContext() {
 	AttachmentMaxFiles = sec.Key("MAX_FILES").MustInt(5)
 	AttachmentEnabled = sec.Key("ENABLED").MustBool(true)
 
-	TimeFormatKey := Cfg.Section("time").Key("FORMAT").MustString("RFC1123")
-	TimeFormat = map[string]string{
-		"ANSIC":       time.ANSIC,
-		"UnixDate":    time.UnixDate,
-		"RubyDate":    time.RubyDate,
-		"RFC822":      time.RFC822,
-		"RFC822Z":     time.RFC822Z,
-		"RFC850":      time.RFC850,
-		"RFC1123":     time.RFC1123,
-		"RFC1123Z":    time.RFC1123Z,
-		"RFC3339":     time.RFC3339,
-		"RFC3339Nano": time.RFC3339Nano,
-		"Kitchen":     time.Kitchen,
-		"Stamp":       time.Stamp,
-		"StampMilli":  time.StampMilli,
-		"StampMicro":  time.StampMicro,
-		"StampNano":   time.StampNano,
-	}[TimeFormatKey]
-	// When the TimeFormatKey does not exist in the previous map e.g.'2006-01-02 15:04:05'
-	if len(TimeFormat) == 0 {
-		TimeFormat = TimeFormatKey
-		TestTimeFormat, _ := time.Parse(TimeFormat, TimeFormat)
-		if TestTimeFormat.Format(time.RFC3339) != "2006-01-02T15:04:05Z" {
-			log.Fatal("Can't create time properly, please check your time format has 2006, 01, 02, 15, 04 and 05")
+	timeFormatKey := Cfg.Section("time").Key("FORMAT").MustString("")
+	if timeFormatKey != "" {
+		TimeFormat = map[string]string{
+			"ANSIC":       time.ANSIC,
+			"UnixDate":    time.UnixDate,
+			"RubyDate":    time.RubyDate,
+			"RFC822":      time.RFC822,
+			"RFC822Z":     time.RFC822Z,
+			"RFC850":      time.RFC850,
+			"RFC1123":     time.RFC1123,
+			"RFC1123Z":    time.RFC1123Z,
+			"RFC3339":     time.RFC3339,
+			"RFC3339Nano": time.RFC3339Nano,
+			"Kitchen":     time.Kitchen,
+			"Stamp":       time.Stamp,
+			"StampMilli":  time.StampMilli,
+			"StampMicro":  time.StampMicro,
+			"StampNano":   time.StampNano,
+		}[timeFormatKey]
+		// When the TimeFormatKey does not exist in the previous map e.g.'2006-01-02 15:04:05'
+		if len(TimeFormat) == 0 {
+			TimeFormat = timeFormatKey
+			TestTimeFormat, _ := time.Parse(TimeFormat, TimeFormat)
+			if TestTimeFormat.Format(time.RFC3339) != "2006-01-02T15:04:05Z" {
+				log.Warn("Provided TimeFormat: %s does not create a fully specified date and time.", TimeFormat)
+				log.Warn("In order to display dates and times correctly please check your time format has 2006, 01, 02, 15, 04 and 05")
+			}
+			log.Trace("Custom TimeFormat: %s", TimeFormat)
 		}
-		log.Trace("Custom TimeFormat: %s", TimeFormat)
+	}
+
+	zone := Cfg.Section("time").Key("DEFAULT_UI_LOCATION").String()
+	if zone != "" {
+		DefaultUILocation, err = time.LoadLocation(zone)
+		if err != nil {
+			log.Fatal("Load time zone failed: %v", err)
+		} else {
+			log.Info("Default UI Location is %v", zone)
+		}
+	}
+	if DefaultUILocation == nil {
+		DefaultUILocation = time.Local
 	}
 
 	RunUser = Cfg.Section("").Key("RUN_USER").MustString(user.CurrentUsername())
@@ -903,7 +974,6 @@ func NewContext() {
 	u.Path = path.Join(u.Path, "api", "swagger")
 	API.SwaggerURL = u.String()
 
-	newCron()
 	newGit()
 
 	sec = Cfg.Section("mirror")
@@ -922,17 +992,16 @@ func NewContext() {
 	if len(Langs) == 0 {
 		Langs = []string{
 			"en-US", "zh-CN", "zh-HK", "zh-TW", "de-DE", "fr-FR", "nl-NL", "lv-LV",
-			"ru-RU", "uk-UA", "ja-JP", "es-ES", "pt-BR", "pl-PL", "bg-BG", "it-IT",
-			"fi-FI", "tr-TR", "cs-CZ", "sr-SP", "sv-SE", "ko-KR"}
+			"ru-RU", "uk-UA", "ja-JP", "es-ES", "pt-BR", "pt-PT", "pl-PL", "bg-BG",
+			"it-IT", "fi-FI", "tr-TR", "cs-CZ", "sr-SP", "sv-SE", "ko-KR"}
 	}
 	Names = Cfg.Section("i18n").Key("NAMES").Strings(",")
 	if len(Names) == 0 {
 		Names = []string{"English", "简体中文", "繁體中文（香港）", "繁體中文（台灣）", "Deutsch",
 			"français", "Nederlands", "latviešu", "русский", "Українська", "日本語",
-			"español", "português do Brasil", "polski", "български", "italiano",
-			"suomi", "Türkçe", "čeština", "српски", "svenska", "한국어"}
+			"español", "português do Brasil", "Português de Portugal", "polski", "български",
+			"italiano", "suomi", "Türkçe", "čeština", "српски", "svenska", "한국어"}
 	}
-	dateLangs = Cfg.Section("i18n.datelang").KeysHash()
 
 	ShowFooterBranding = Cfg.Section("other").Key("SHOW_FOOTER_BRANDING").MustBool(false)
 	ShowFooterVersion = Cfg.Section("other").Key("SHOW_FOOTER_VERSION").MustBool(true)
@@ -940,6 +1009,8 @@ func NewContext() {
 
 	UI.ShowUserEmail = Cfg.Section("ui").Key("SHOW_USER_EMAIL").MustBool(true)
 	UI.DefaultShowFullName = Cfg.Section("ui").Key("DEFAULT_SHOW_FULL_NAME").MustBool(false)
+	UI.SearchRepoDescription = Cfg.Section("ui").Key("SEARCH_REPO_DESCRIPTION").MustBool(true)
+	UI.UseServiceWorker = Cfg.Section("ui").Key("USE_SERVICE_WORKER").MustBool(true)
 
 	HasRobotsTxt = com.IsFile(path.Join(CustomPath, "robots.txt"))
 
@@ -949,7 +1020,10 @@ func NewContext() {
 	U2F.TrustedFacets, _ = shellquote.Split(sec.Key("TRUSTED_FACETS").MustString(strings.TrimRight(AppURL, "/")))
 	U2F.AppID = sec.Key("APP_ID").MustString(strings.TrimRight(AppURL, "/"))
 
-	zip.Verbose = false
+	UI.ReactionsMap = make(map[string]bool)
+	for _, reaction := range UI.Reactions {
+		UI.ReactionsMap[reaction] = true
+	}
 }
 
 func loadInternalToken(sec *ini.Section) string {
@@ -985,7 +1059,7 @@ func loadInternalToken(sec *ini.Section) string {
 			return token
 		}
 
-		return string(buf)
+		return strings.TrimSpace(string(buf))
 	default:
 		log.Fatal("Unsupported URI-Scheme %q (INTERNAL_TOKEN_URI = %q)", tempURI.Scheme, uri)
 	}
@@ -1022,10 +1096,20 @@ func loadOrGenerateInternalToken(sec *ini.Section) string {
 	return token
 }
 
+func ensureLFSDirectory() {
+	if LFS.StartServer {
+		if err := os.MkdirAll(LFS.ContentPath, 0700); err != nil {
+			log.Fatal("Failed to create '%s': %v", LFS.ContentPath, err)
+		}
+	}
+}
+
 // NewServices initializes the services
 func NewServices() {
+	InitDBConfig()
 	newService()
 	NewLogServices(false)
+	ensureLFSDirectory()
 	newCacheService()
 	newSessionService()
 	newCORSService()
@@ -1033,5 +1117,8 @@ func NewServices() {
 	newRegisterMailService()
 	newNotifyMailService()
 	newWebhookService()
+	newMigrationsService()
 	newIndexerService()
+	newTaskService()
+	NewQueueService()
 }

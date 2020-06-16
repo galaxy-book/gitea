@@ -13,7 +13,10 @@ import (
 	"code.gitea.io/gitea/modules/context"
 	"code.gitea.io/gitea/modules/markup/markdown"
 	"code.gitea.io/gitea/modules/setting"
+	"code.gitea.io/gitea/modules/timeutil"
 	"code.gitea.io/gitea/modules/util"
+
+	"xorm.io/builder"
 )
 
 const (
@@ -29,13 +32,13 @@ func Milestones(ctx *context.Context) {
 	ctx.Data["PageIsMilestones"] = true
 
 	isShowClosed := ctx.Query("state") == "closed"
-	openCount, closedCount, err := models.MilestoneStats(ctx.Repo.Repository.ID)
+	stats, err := models.GetMilestonesStatsByRepoCond(builder.And(builder.Eq{"id": ctx.Repo.Repository.ID}))
 	if err != nil {
 		ctx.ServerError("MilestoneStats", err)
 		return
 	}
-	ctx.Data["OpenCount"] = openCount
-	ctx.Data["ClosedCount"] = closedCount
+	ctx.Data["OpenCount"] = stats.OpenCount
+	ctx.Data["ClosedCount"] = stats.ClosedCount
 
 	sortType := ctx.Query("sort")
 	page := ctx.QueryInt("page")
@@ -45,9 +48,9 @@ func Milestones(ctx *context.Context) {
 
 	var total int
 	if !isShowClosed {
-		total = int(openCount)
+		total = int(stats.OpenCount)
 	} else {
-		total = int(closedCount)
+		total = int(stats.ClosedCount)
 	}
 
 	miles, err := models.GetMilestones(ctx.Repo.Repository.ID, page, isShowClosed, sortType)
@@ -87,8 +90,6 @@ func NewMilestone(ctx *context.Context) {
 	ctx.Data["Title"] = ctx.Tr("repo.milestones.new")
 	ctx.Data["PageIsIssueList"] = true
 	ctx.Data["PageIsMilestones"] = true
-	ctx.Data["RequireDatetimepicker"] = true
-	ctx.Data["DateLang"] = setting.DateLang(ctx.Locale.Language())
 	ctx.HTML(200, tplMilestoneNew)
 }
 
@@ -97,8 +98,6 @@ func NewMilestonePost(ctx *context.Context, form auth.CreateMilestoneForm) {
 	ctx.Data["Title"] = ctx.Tr("repo.milestones.new")
 	ctx.Data["PageIsIssueList"] = true
 	ctx.Data["PageIsMilestones"] = true
-	ctx.Data["RequireDatetimepicker"] = true
-	ctx.Data["DateLang"] = setting.DateLang(ctx.Locale.Language())
 
 	if ctx.HasError() {
 		ctx.HTML(200, tplMilestoneNew)
@@ -120,7 +119,7 @@ func NewMilestonePost(ctx *context.Context, form auth.CreateMilestoneForm) {
 		RepoID:       ctx.Repo.Repository.ID,
 		Name:         form.Title,
 		Content:      form.Content,
-		DeadlineUnix: util.TimeStamp(deadline.Unix()),
+		DeadlineUnix: timeutil.TimeStamp(deadline.Unix()),
 	}); err != nil {
 		ctx.ServerError("NewMilestone", err)
 		return
@@ -135,8 +134,6 @@ func EditMilestone(ctx *context.Context) {
 	ctx.Data["Title"] = ctx.Tr("repo.milestones.edit")
 	ctx.Data["PageIsMilestones"] = true
 	ctx.Data["PageIsEditMilestone"] = true
-	ctx.Data["RequireDatetimepicker"] = true
-	ctx.Data["DateLang"] = setting.DateLang(ctx.Locale.Language())
 
 	m, err := models.GetMilestoneByRepoID(ctx.Repo.Repository.ID, ctx.ParamsInt64(":id"))
 	if err != nil {
@@ -160,8 +157,6 @@ func EditMilestonePost(ctx *context.Context, form auth.CreateMilestoneForm) {
 	ctx.Data["Title"] = ctx.Tr("repo.milestones.edit")
 	ctx.Data["PageIsMilestones"] = true
 	ctx.Data["PageIsEditMilestone"] = true
-	ctx.Data["RequireDatetimepicker"] = true
-	ctx.Data["DateLang"] = setting.DateLang(ctx.Locale.Language())
 
 	if ctx.HasError() {
 		ctx.HTML(200, tplMilestoneNew)
@@ -190,8 +185,8 @@ func EditMilestonePost(ctx *context.Context, form auth.CreateMilestoneForm) {
 	}
 	m.Name = form.Title
 	m.Content = form.Content
-	m.DeadlineUnix = util.TimeStamp(deadline.Unix())
-	if err = models.UpdateMilestone(m); err != nil {
+	m.DeadlineUnix = timeutil.TimeStamp(deadline.Unix())
+	if err = models.UpdateMilestone(m, m.IsClosed); err != nil {
 		ctx.ServerError("UpdateMilestone", err)
 		return
 	}
@@ -223,7 +218,7 @@ func ChangeMilestonStatus(ctx *context.Context) {
 		ctx.Redirect(ctx.Repo.RepoLink + "/milestones?state=open")
 	case "close":
 		if !m.IsClosed {
-			m.ClosedDateUnix = util.TimeStampNow()
+			m.ClosedDateUnix = timeutil.TimeStampNow()
 			if err = models.ChangeMilestoneStatus(m, true); err != nil {
 				ctx.ServerError("ChangeMilestoneStatus", err)
 				return
@@ -253,6 +248,11 @@ func MilestoneIssuesAndPulls(ctx *context.Context) {
 	milestoneID := ctx.ParamsInt64(":id")
 	milestone, err := models.GetMilestoneByID(milestoneID)
 	if err != nil {
+		if models.IsErrMilestoneNotExist(err) {
+			ctx.NotFound("GetMilestoneByID", err)
+			return
+		}
+
 		ctx.ServerError("GetMilestoneByID", err)
 		return
 	}
@@ -262,13 +262,8 @@ func MilestoneIssuesAndPulls(ctx *context.Context) {
 
 	issues(ctx, milestoneID, util.OptionalBoolNone)
 
-	perm, err := models.GetUserRepoPermission(ctx.Repo.Repository, ctx.User)
-	if err != nil {
-		ctx.ServerError("GetUserRepoPermission", err)
-		return
-	}
-	ctx.Data["CanWriteIssues"] = perm.CanWriteIssuesOrPulls(false)
-	ctx.Data["CanWritePulls"] = perm.CanWriteIssuesOrPulls(true)
+	ctx.Data["CanWriteIssues"] = ctx.Repo.CanWriteIssuesOrPulls(false)
+	ctx.Data["CanWritePulls"] = ctx.Repo.CanWriteIssuesOrPulls(true)
 
 	ctx.HTML(200, tplMilestoneIssues)
 }

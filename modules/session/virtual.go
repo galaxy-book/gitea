@@ -10,13 +10,13 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/go-macaron/session"
-	couchbase "github.com/go-macaron/session/couchbase"
-	memcache "github.com/go-macaron/session/memcache"
-	mysql "github.com/go-macaron/session/mysql"
-	nodb "github.com/go-macaron/session/nodb"
-	postgres "github.com/go-macaron/session/postgres"
-	redis "github.com/go-macaron/session/redis"
+	"gitea.com/macaron/session"
+	couchbase "gitea.com/macaron/session/couchbase"
+	memcache "gitea.com/macaron/session/memcache"
+	mysql "gitea.com/macaron/session/mysql"
+	nodb "gitea.com/macaron/session/nodb"
+	postgres "gitea.com/macaron/session/postgres"
+	redis "gitea.com/macaron/session/redis"
 )
 
 // VirtualSessionProvider represents a shadowed session provider implementation.
@@ -75,11 +75,11 @@ func (o *VirtualSessionProvider) Exist(sid string) bool {
 	return true
 }
 
-// Destory deletes a session by session ID.
-func (o *VirtualSessionProvider) Destory(sid string) error {
+// Destroy deletes a session by session ID.
+func (o *VirtualSessionProvider) Destroy(sid string) error {
 	o.lock.Lock()
 	defer o.lock.Unlock()
-	return o.provider.Destory(sid)
+	return o.provider.Destroy(sid)
 }
 
 // Regenerate regenerates a session store from old session ID to new one.
@@ -107,10 +107,11 @@ func init() {
 
 // VirtualStore represents a virtual session store implementation.
 type VirtualStore struct {
-	p    *VirtualSessionProvider
-	sid  string
-	lock sync.RWMutex
-	data map[interface{}]interface{}
+	p        *VirtualSessionProvider
+	sid      string
+	lock     sync.RWMutex
+	data     map[interface{}]interface{}
+	released bool
 }
 
 // NewVirtualStore creates and returns a virtual session store.
@@ -164,7 +165,7 @@ func (s *VirtualStore) Release() error {
 		// Now ensure that we don't exist!
 		realProvider := s.p.provider
 
-		if realProvider.Exist(s.sid) {
+		if !s.released && realProvider.Exist(s.sid) {
 			// This is an error!
 			return fmt.Errorf("new sid '%s' already exists", s.sid)
 		}
@@ -172,12 +173,19 @@ func (s *VirtualStore) Release() error {
 		if err != nil {
 			return err
 		}
+		if err := realStore.Flush(); err != nil {
+			return err
+		}
 		for key, value := range s.data {
 			if err := realStore.Set(key, value); err != nil {
 				return err
 			}
 		}
-		return realStore.Release()
+		err = realStore.Release()
+		if err == nil {
+			s.released = true
+		}
+		return err
 	}
 	return nil
 }

@@ -9,8 +9,8 @@ import (
 	"io"
 	"strings"
 
-	"gopkg.in/src-d/go-git.v4/plumbing"
-	"gopkg.in/src-d/go-git.v4/plumbing/object"
+	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/object"
 )
 
 // Tree represents a flat directory listing.
@@ -63,7 +63,7 @@ func (t *Tree) SubTree(rpath string) (*Tree, error) {
 }
 
 func (t *Tree) loadTreeObject() error {
-	gogitTree, err := t.repo.gogitRepo.TreeObject(plumbing.Hash(t.ID))
+	gogitTree, err := t.repo.gogitRepo.TreeObject(t.ID)
 	if err != nil {
 		return err
 	}

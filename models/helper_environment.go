@@ -10,15 +10,38 @@ import (
 	"strings"
 )
 
+// env keys for git hooks need
+const (
+	EnvRepoName     = "GITEA_REPO_NAME"
+	EnvRepoUsername = "GITEA_REPO_USER_NAME"
+	EnvRepoIsWiki   = "GITEA_REPO_IS_WIKI"
+	EnvPusherName   = "GITEA_PUSHER_NAME"
+	EnvPusherEmail  = "GITEA_PUSHER_EMAIL"
+	EnvPusherID     = "GITEA_PUSHER_ID"
+	EnvKeyID        = "GITEA_KEY_ID"
+	EnvIsDeployKey  = "GITEA_IS_DEPLOY_KEY"
+	EnvIsInternal   = "GITEA_INTERNAL_PUSH"
+)
+
+// InternalPushingEnvironment returns an os environment to switch off hooks on push
+// It is recommended to avoid using this unless you are pushing within a transaction
+// or if you absolutely are sure that post-receive and pre-receive will do nothing
+// We provide the full pushing-environment for other hook providers
+func InternalPushingEnvironment(doer *User, repo *Repository) []string {
+	return append(PushingEnvironment(doer, repo),
+		EnvIsInternal+"=true",
+	)
+}
+
 // PushingEnvironment returns an os environment to allow hooks to work on push
 func PushingEnvironment(doer *User, repo *Repository) []string {
-	return FullPushingEnvironment(doer, doer, repo, 0)
+	return FullPushingEnvironment(doer, doer, repo, repo.Name, 0)
 }
 
 // FullPushingEnvironment returns an os environment to allow hooks to work on push
-func FullPushingEnvironment(author, committer *User, repo *Repository, prID int64) []string {
+func FullPushingEnvironment(author, committer *User, repo *Repository, repoName string, prID int64) []string {
 	isWiki := "false"
-	if strings.HasSuffix(repo.Name, ".wiki") {
+	if strings.HasSuffix(repoName, ".wiki") {
 		isWiki = "true"
 	}
 
@@ -32,8 +55,8 @@ func FullPushingEnvironment(author, committer *User, repo *Repository, prID int6
 		"GIT_AUTHOR_EMAIL="+authorSig.Email,
 		"GIT_COMMITTER_NAME="+committerSig.Name,
 		"GIT_COMMITTER_EMAIL="+committerSig.Email,
-		EnvRepoName+"="+repo.Name,
-		EnvRepoUsername+"="+repo.MustOwnerName(),
+		EnvRepoName+"="+repoName,
+		EnvRepoUsername+"="+repo.OwnerName,
 		EnvRepoIsWiki+"="+isWiki,
 		EnvPusherName+"="+committer.Name,
 		EnvPusherID+"="+fmt.Sprintf("%d", committer.ID),

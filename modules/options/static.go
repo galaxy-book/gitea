@@ -12,7 +12,8 @@ import (
 	"path"
 
 	"code.gitea.io/gitea/modules/setting"
-	"github.com/Unknwon/com"
+
+	"github.com/unknwon/com"
 )
 
 var (
@@ -110,4 +111,40 @@ func fileFromDir(name string) ([]byte, error) {
 	defer f.Close()
 
 	return ioutil.ReadAll(f)
+}
+
+func Asset(name string) ([]byte, error) {
+	f, err := Assets.Open("/" + name)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return ioutil.ReadAll(f)
+}
+
+func AssetNames() []string {
+	realFS := Assets.(vfsgen۰FS)
+	var results = make([]string, 0, len(realFS))
+	for k := range realFS {
+		results = append(results, k[1:])
+	}
+	return results
+}
+
+func AssetIsDir(name string) (bool, error) {
+	if f, err := Assets.Open("/" + name); err != nil {
+		return false, err
+	} else {
+		defer f.Close()
+		if fi, err := f.Stat(); err != nil {
+			return false, err
+		} else {
+			return fi.IsDir(), nil
+		}
+	}
+}
+
+// IsDynamic will return false when using embedded data (-tags bindata)
+func IsDynamic() bool {
+	return false
 }

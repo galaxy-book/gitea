@@ -13,8 +13,8 @@ import (
 
 	"code.gitea.io/gitea/modules/test"
 
-	"github.com/Unknwon/i18n"
 	"github.com/stretchr/testify/assert"
+	"github.com/unknwon/i18n"
 )
 
 func testCreateBranch(t testing.TB, session *TestSession, user, repo, oldRefSubURL, newBranchName string, expectedStatus int) string {
@@ -110,7 +110,7 @@ func testCreateBranches(t *testing.T, giteaURL *url.URL) {
 		},
 	}
 	for _, test := range tests {
-		prepareTestEnv(t)
+		defer prepareTestEnv(t)()
 		session := loginUser(t, "user2")
 		if test.CreateRelease != "" {
 			createNewRelease(t, session, "/user2/repo1", test.CreateRelease, test.CreateRelease, false, false)
@@ -129,7 +129,7 @@ func testCreateBranches(t *testing.T, giteaURL *url.URL) {
 }
 
 func TestCreateBranchInvalidCSRF(t *testing.T) {
-	prepareTestEnv(t)
+	defer prepareTestEnv(t)()
 	session := loginUser(t, "user2")
 	req := NewRequestWithValues(t, "POST", "user2/repo1/branches/_new/branch/master", map[string]string{
 		"_csrf":           "fake_csrf",

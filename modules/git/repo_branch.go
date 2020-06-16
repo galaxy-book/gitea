@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"strings"
 
-	"gopkg.in/src-d/go-git.v4/plumbing"
+	"github.com/go-git/go-git/v5/plumbing"
 )
 
 // BranchPrefix base dir of the branch information file store on git
@@ -28,8 +28,14 @@ func IsBranchExist(repoPath, name string) bool {
 
 // IsBranchExist returns true if given branch exists in current repository.
 func (repo *Repository) IsBranchExist(name string) bool {
-	_, err := repo.gogitRepo.Reference(plumbing.ReferenceName(BranchPrefix+name), true)
-	return err == nil
+	if name == "" {
+		return false
+	}
+	reference, err := repo.gogitRepo.Reference(plumbing.ReferenceName(BranchPrefix+name), true)
+	if err != nil {
+		return false
+	}
+	return reference.Type() != plumbing.InvalidReference
 }
 
 // Branch represents a Git branch.
@@ -42,6 +48,9 @@ type Branch struct {
 
 // GetHEADBranch returns corresponding branch of HEAD.
 func (repo *Repository) GetHEADBranch() (*Branch, error) {
+	if repo == nil {
+		return nil, fmt.Errorf("nil repo")
+	}
 	stdout, err := NewCommand("symbolic-ref", "HEAD").RunInDir(repo.Path)
 	if err != nil {
 		return nil, err
@@ -102,6 +111,7 @@ func GetBranchesByPath(path string) ([]*Branch, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer gitRepo.Close()
 
 	brs, err := gitRepo.GetBranches()
 	if err != nil {
@@ -135,7 +145,7 @@ func (repo *Repository) DeleteBranch(name string, opts DeleteBranchOptions) erro
 		cmd.AddArguments("-d")
 	}
 
-	cmd.AddArguments(name)
+	cmd.AddArguments("--", name)
 	_, err := cmd.RunInDir(repo.Path)
 
 	return err
@@ -165,7 +175,7 @@ func (repo *Repository) AddRemote(name, url string, fetch bool) error {
 
 // RemoveRemote removes a remote from repository.
 func (repo *Repository) RemoveRemote(name string) error {
-	_, err := NewCommand("remote", "remove", name).RunInDir(repo.Path)
+	_, err := NewCommand("remote", "rm", name).RunInDir(repo.Path)
 	return err
 }
 

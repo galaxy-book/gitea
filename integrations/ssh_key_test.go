@@ -16,6 +16,7 @@ import (
 
 	"code.gitea.io/gitea/modules/git"
 	api "code.gitea.io/gitea/modules/structs"
+
 	"github.com/stretchr/testify/assert"
 )
 
@@ -112,7 +113,7 @@ func testKeyOnlyOneType(t *testing.T, u *url.URL) {
 
 			sshURL := createSSHUrl(ctx.GitPath(), u)
 
-			t.Run("FailToClone", doGitCloneFail(dstPath, sshURL))
+			t.Run("FailToClone", doGitCloneFail(sshURL))
 
 			t.Run("CreateUserKey", doAPICreateUserKey(ctx, keyname, keyFile, func(t *testing.T, publicKey api.PublicKey) {
 				userKeyPublicKeyID = publicKey.ID
@@ -138,7 +139,7 @@ func testKeyOnlyOneType(t *testing.T, u *url.URL) {
 
 			sshURL := createSSHUrl(ctx.GitPath(), u)
 
-			t.Run("FailToClone", doGitCloneFail(dstPath, sshURL))
+			t.Run("FailToClone", doGitCloneFail(sshURL))
 
 			// Should now be able to add...
 			t.Run("AddReadOnlyDeployKey", doAPICreateDeployKey(ctx, keyname, keyFile, true))
@@ -203,15 +204,11 @@ func testKeyOnlyOneType(t *testing.T, u *url.URL) {
 		})
 
 		t.Run("DeleteUserKeyShouldRemoveAbilityToClone", func(t *testing.T) {
-			dstPath, err := ioutil.TempDir("", ctx.Reponame)
-			assert.NoError(t, err)
-			defer os.RemoveAll(dstPath)
-
 			sshURL := createSSHUrl(ctx.GitPath(), u)
 
 			t.Run("DeleteUserKey", doAPIDeleteUserKey(ctx, userKeyPublicKeyID))
 
-			t.Run("FailToClone", doGitCloneFail(dstPath, sshURL))
+			t.Run("FailToClone", doGitCloneFail(sshURL))
 		})
 	})
 }

@@ -14,11 +14,9 @@ import (
 	"time"
 
 	"code.gitea.io/gitea/modules/setting"
-	"gopkg.in/macaron.v1"
-)
 
-//go:generate go run -mod=vendor main.go
-//go:generate go fmt bindata.go
+	"gitea.com/macaron/macaron"
+)
 
 // Options represents the available options to configure the macaron handler.
 type Options struct {
@@ -30,6 +28,15 @@ type Options struct {
 	ExpiresAfter time.Duration
 	FileSystem   http.FileSystem
 	Prefix       string
+}
+
+// List of known entries inside the `public` directory
+var knownEntries = []string{
+	"css",
+	"fomantic",
+	"img",
+	"js",
+	"vendor",
 }
 
 // Custom implements the macaron static handler for serving custom assets.
@@ -101,6 +108,19 @@ func (opts *Options) handle(ctx *macaron.Context, log *log.Logger, opt *Options)
 
 	f, err := opt.FileSystem.Open(file)
 	if err != nil {
+		// 404 requests to any known entries in `public`
+		if path.Base(opts.Directory) == "public" {
+			parts := strings.Split(file, "/")
+			if len(parts) < 2 {
+				return false
+			}
+			for _, entry := range knownEntries {
+				if entry == parts[1] {
+					ctx.Resp.WriteHeader(404)
+					return true
+				}
+			}
+		}
 		return false
 	}
 	defer f.Close()

@@ -1,3 +1,7 @@
+// Copyright 2020 The Gitea Authors. All rights reserved.
+// Use of this source code is governed by a MIT-style
+// license that can be found in the LICENSE file.
+
 package main
 
 /*
@@ -5,6 +9,7 @@ Checkout a PR and load the tests data into sqlite database
 */
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -27,13 +32,13 @@ import (
 	"code.gitea.io/gitea/routers"
 	"code.gitea.io/gitea/routers/routes"
 
-	"github.com/Unknwon/com"
-	"github.com/go-xorm/xorm"
+	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/config"
+	"github.com/go-git/go-git/v5/plumbing"
 	context2 "github.com/gorilla/context"
-	"gopkg.in/src-d/go-git.v4"
-	"gopkg.in/src-d/go-git.v4/config"
-	"gopkg.in/src-d/go-git.v4/plumbing"
+	"github.com/unknwon/com"
 	"gopkg.in/testfixtures.v2"
+	"xorm.io/xorm"
 )
 
 var codeFilePath = "contrib/pr/checkout.go"
@@ -79,20 +84,20 @@ func runPR() {
 	setting.CheckLFSVersion()
 	//models.LoadConfigs()
 	/*
-		models.DbCfg.Type = "sqlite3"
-		models.DbCfg.Path = ":memory:"
-		models.DbCfg.Timeout = 500
+		setting.Database.Type = "sqlite3"
+		setting.Database.Path = ":memory:"
+		setting.Database.Timeout = 500
 	*/
 	db := setting.Cfg.Section("database")
 	db.NewKey("DB_TYPE", "sqlite3")
 	db.NewKey("PATH", ":memory:")
-	setting.LogSQL = true
-	models.LoadConfigs()
+
 	routers.NewServices()
+	setting.Database.LogSQL = true
 	//x, err = xorm.NewEngine("sqlite3", "file::memory:?cache=shared")
 
 	var helper testfixtures.Helper = &testfixtures.SQLite{}
-	models.NewEngine(func(_ *xorm.Engine) error {
+	models.NewEngine(context.Background(), func(_ *xorm.Engine) error {
 		return nil
 	})
 	models.HasEngine = true
@@ -246,9 +251,10 @@ func main() {
 			log.Fatalf("Failed to duplicate this code file in PR : %v", err)
 		}
 	}
-	time.Sleep(5 * time.Second)
+	//Force build of js, css, bin, ...
+	runCmd("make", "build")
 	//Start with integration test
-	runCmd("go", "run", "-tags", "sqlite sqlite_unlock_notify", codeFilePath, "-run")
+	runCmd("go", "run", "-mod", "vendor", "-tags", "sqlite sqlite_unlock_notify", codeFilePath, "-run")
 }
 func runCmd(cmd ...string) {
 	log.Printf("Executing : %s ...\n", cmd)

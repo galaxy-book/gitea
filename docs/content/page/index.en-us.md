@@ -123,7 +123,7 @@ Windows, on architectures like amd64, i386, ARM, PowerPC, and others.
             - Cron jobs
                 - Update mirrors
                 - Repository health check
-                - Check repository statstics
+                - Check repository statistics
                 - Clean up old archives
     - Environment variables
     - Command line options
@@ -255,10 +255,14 @@ Windows, on architectures like amd64, i386, ARM, PowerPC, and others.
 - 2 CPU cores and 1GB RAM is typically sufficient for small teams/projects.
 - Gitea should be run with a dedicated non-root system account on UNIX-type systems.
    - Note: Gitea manages the `~/.ssh/authorized_keys` file. Running Gitea as a regular user could break that user's ability to log in.
+- [Git](https://git-scm.com/) version 1.7.2 or later is required. Version 1.9.0 or later is recommended. Also please note:
+   - Git [large file storage](https://git-lfs.github.com/) will be available if enabled when git >= 2.1.2.
+   - Git commit-graph rendering will be enabled automatically when git >= 2.18.
 
 ## Browser Support
 
-- Please see [Semantic UI](https://github.com/Semantic-Org/Semantic-UI#browser-support) for specific versions of supported browsers.
+- Last 2 versions of Chrome, Firefox, Safari, Edge (EdgeHTML) and Edge (Chromium)
+- Firefox ESR
 
 ## Components
 
@@ -271,9 +275,7 @@ Windows, on architectures like amd64, i386, ARM, PowerPC, and others.
   * [DropzoneJS](http://www.dropzonejs.com/)
   * [Highlight](https://highlightjs.org/)
   * [Clipboard](https://zenorocha.github.io/clipboard.js/)
-  * [Emojify](https://github.com/Ranks/emojify.js)
   * [CodeMirror](https://codemirror.net/)
-  * [jQuery Date Time Picker](https://github.com/xdan/datetimepicker)
   * [jQuery MiniColors](https://github.com/claviska/jquery-minicolors)
 * Database drivers:
   * [github.com/go-sql-driver/mysql](https://github.com/go-sql-driver/mysql)

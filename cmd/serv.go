@@ -12,18 +12,20 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"code.gitea.io/gitea/models"
+	"code.gitea.io/gitea/modules/lfs"
 	"code.gitea.io/gitea/modules/log"
 	"code.gitea.io/gitea/modules/pprof"
 	"code.gitea.io/gitea/modules/private"
 	"code.gitea.io/gitea/modules/setting"
 
-	"github.com/Unknwon/com"
 	"github.com/dgrijalva/jwt-go"
+	"github.com/unknwon/com"
 	"github.com/urfave/cli"
 )
 
@@ -41,12 +43,20 @@ var CmdServ = cli.Command{
 		cli.BoolFlag{
 			Name: "enable-pprof",
 		},
+		cli.BoolFlag{
+			Name: "debug",
+		},
 	},
 }
 
-func setup(logPath string) {
-	_ = log.DelLogger("console")
+func setup(logPath string, debug bool) {
+	if !debug {
+		_ = log.DelLogger("console")
+	}
 	setting.NewContext()
+	if debug {
+		setting.ProdMode = false
+	}
 }
 
 func parseCmd(cmd string) (string, string) {
@@ -64,6 +74,7 @@ var (
 		"git-receive-pack":   models.AccessModeWrite,
 		lfsAuthenticateVerb:  models.AccessModeNone,
 	}
+	alphaDashDotPattern = regexp.MustCompile(`[^\w-\.]`)
 )
 
 func fail(userMessage, logMessage string, args ...interface{}) {
@@ -80,7 +91,7 @@ func fail(userMessage, logMessage string, args ...interface{}) {
 
 func runServ(c *cli.Context) error {
 	// FIXME: This needs to internationalised
-	setup("serv.log")
+	setup("serv.log", c.Bool("debug"))
 
 	if setting.SSH.Disabled {
 		println("Gitea: SSH has been disabled")
@@ -109,7 +120,7 @@ func runServ(c *cli.Context) error {
 		if key.Type == models.KeyTypeDeploy {
 			println("Hi there! You've successfully authenticated with the deploy key named " + key.Name + ", but Gitea does not provide shell access.")
 		} else {
-			println("Hi there: " + user.Name + "! You've successfully authenticated with the key named " + key.Name + ", but Gitea does not provide shell access.")
+			println("Hi there, " + user.Name + "! You've successfully authenticated with the key named " + key.Name + ", but Gitea does not provide shell access.")
 		}
 		println("If this is unexpected, please log in with password and setup Gitea under another user.")
 		return nil
@@ -138,6 +149,10 @@ func runServ(c *cli.Context) error {
 
 	username := strings.ToLower(rr[0])
 	reponame := strings.ToLower(strings.TrimSuffix(rr[1], ".git"))
+
+	if alphaDashDotPattern.MatchString(reponame) {
+		fail("Invalid repo name", "Invalid repo name: %s", reponame)
+	}
 
 	if setting.EnablePprof || c.Bool("enable-pprof") {
 		if err := os.MkdirAll(setting.PprofDataPath, os.ModePerm); err != nil {
@@ -191,18 +206,22 @@ func runServ(c *cli.Context) error {
 	os.Setenv(models.EnvPusherID, strconv.FormatInt(results.UserID, 10))
 	os.Setenv(models.ProtectedBranchRepoID, strconv.FormatInt(results.RepoID, 10))
 	os.Setenv(models.ProtectedBranchPRID, fmt.Sprintf("%d", 0))
+	os.Setenv(models.EnvIsDeployKey, fmt.Sprintf("%t", results.IsDeployKey))
+	os.Setenv(models.EnvKeyID, fmt.Sprintf("%d", results.KeyID))
 
 	//LFS token authentication
 	if verb == lfsAuthenticateVerb {
 		url := fmt.Sprintf("%s%s/%s.git/info/lfs", setting.AppURL, url.PathEscape(results.OwnerName), url.PathEscape(results.RepoName))
 
 		now := time.Now()
-		claims := jwt.MapClaims{
-			"repo": results.RepoID,
-			"op":   lfsVerb,
-			"exp":  now.Add(setting.LFS.HTTPAuthExpiry).Unix(),
-			"nbf":  now.Unix(),
-			"user": results.UserID,
+		claims := lfs.Claims{
+			StandardClaims: jwt.StandardClaims{
+				ExpiresAt: now.Add(setting.LFS.HTTPAuthExpiry).Unix(),
+				NotBefore: now.Unix(),
+			},
+			RepoID: results.RepoID,
+			Op:     lfsVerb,
+			UserID: results.UserID,
 		}
 		token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 

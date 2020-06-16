@@ -14,6 +14,7 @@ import (
 	"code.gitea.io/gitea/models"
 	"code.gitea.io/gitea/modules/auth"
 	api "code.gitea.io/gitea/modules/structs"
+
 	"github.com/stretchr/testify/assert"
 )
 
@@ -228,5 +229,123 @@ func doAPIMergePullRequest(ctx APITestContext, owner, repo string, index int64) 
 			return
 		}
 		ctx.Session.MakeRequest(t, req, 200)
+	}
+}
+
+func doAPIGetBranch(ctx APITestContext, branch string, callback ...func(*testing.T, api.Branch)) func(*testing.T) {
+	return func(t *testing.T) {
+		req := NewRequestf(t, "GET", "/api/v1/repos/%s/%s/branches/%s?token=%s", ctx.Username, ctx.Reponame, branch, ctx.Token)
+		if ctx.ExpectedCode != 0 {
+			ctx.Session.MakeRequest(t, req, ctx.ExpectedCode)
+			return
+		}
+		resp := ctx.Session.MakeRequest(t, req, http.StatusOK)
+
+		var branch api.Branch
+		DecodeJSON(t, resp, &branch)
+		if len(callback) > 0 {
+			callback[0](t, branch)
+		}
+	}
+}
+
+func doAPICreateFile(ctx APITestContext, treepath string, options *api.CreateFileOptions, callback ...func(*testing.T, api.FileResponse)) func(*testing.T) {
+	return func(t *testing.T) {
+		url := fmt.Sprintf("/api/v1/repos/%s/%s/contents/%s?token=%s", ctx.Username, ctx.Reponame, treepath, ctx.Token)
+		req := NewRequestWithJSON(t, "POST", url, &options)
+		if ctx.ExpectedCode != 0 {
+			ctx.Session.MakeRequest(t, req, ctx.ExpectedCode)
+			return
+		}
+		resp := ctx.Session.MakeRequest(t, req, http.StatusCreated)
+
+		var contents api.FileResponse
+		DecodeJSON(t, resp, &contents)
+		if len(callback) > 0 {
+			callback[0](t, contents)
+		}
+	}
+}
+
+func doAPICreateOrganization(ctx APITestContext, options *api.CreateOrgOption, callback ...func(*testing.T, api.Organization)) func(t *testing.T) {
+	return func(t *testing.T) {
+		url := fmt.Sprintf("/api/v1/orgs?token=%s", ctx.Token)
+
+		req := NewRequestWithJSON(t, "POST", url, &options)
+		if ctx.ExpectedCode != 0 {
+			ctx.Session.MakeRequest(t, req, ctx.ExpectedCode)
+			return
+		}
+		resp := ctx.Session.MakeRequest(t, req, http.StatusCreated)
+
+		var contents api.Organization
+		DecodeJSON(t, resp, &contents)
+		if len(callback) > 0 {
+			callback[0](t, contents)
+		}
+	}
+}
+
+func doAPICreateOrganizationRepository(ctx APITestContext, orgName string, options *api.CreateRepoOption, callback ...func(*testing.T, api.Repository)) func(t *testing.T) {
+	return func(t *testing.T) {
+		url := fmt.Sprintf("/api/v1/orgs/%s/repos?token=%s", orgName, ctx.Token)
+
+		req := NewRequestWithJSON(t, "POST", url, &options)
+		if ctx.ExpectedCode != 0 {
+			ctx.Session.MakeRequest(t, req, ctx.ExpectedCode)
+			return
+		}
+		resp := ctx.Session.MakeRequest(t, req, http.StatusCreated)
+
+		var contents api.Repository
+		DecodeJSON(t, resp, &contents)
+		if len(callback) > 0 {
+			callback[0](t, contents)
+		}
+	}
+}
+
+func doAPICreateOrganizationTeam(ctx APITestContext, orgName string, options *api.CreateTeamOption, callback ...func(*testing.T, api.Team)) func(t *testing.T) {
+	return func(t *testing.T) {
+		url := fmt.Sprintf("/api/v1/orgs/%s/teams?token=%s", orgName, ctx.Token)
+
+		req := NewRequestWithJSON(t, "POST", url, &options)
+		if ctx.ExpectedCode != 0 {
+			ctx.Session.MakeRequest(t, req, ctx.ExpectedCode)
+			return
+		}
+		resp := ctx.Session.MakeRequest(t, req, http.StatusCreated)
+
+		var contents api.Team
+		DecodeJSON(t, resp, &contents)
+		if len(callback) > 0 {
+			callback[0](t, contents)
+		}
+	}
+}
+
+func doAPIAddUserToOrganizationTeam(ctx APITestContext, teamID int64, username string) func(t *testing.T) {
+	return func(t *testing.T) {
+		url := fmt.Sprintf("/api/v1/teams/%d/members/%s?token=%s", teamID, username, ctx.Token)
+
+		req := NewRequest(t, "PUT", url)
+		if ctx.ExpectedCode != 0 {
+			ctx.Session.MakeRequest(t, req, ctx.ExpectedCode)
+			return
+		}
+		ctx.Session.MakeRequest(t, req, http.StatusNoContent)
+	}
+}
+
+func doAPIAddRepoToOrganizationTeam(ctx APITestContext, teamID int64, orgName, repoName string) func(t *testing.T) {
+	return func(t *testing.T) {
+		url := fmt.Sprintf("/api/v1/teams/%d/repos/%s/%s?token=%s", teamID, orgName, repoName, ctx.Token)
+
+		req := NewRequest(t, "PUT", url)
+		if ctx.ExpectedCode != 0 {
+			ctx.Session.MakeRequest(t, req, ctx.ExpectedCode)
+			return
+		}
+		ctx.Session.MakeRequest(t, req, http.StatusNoContent)
 	}
 }

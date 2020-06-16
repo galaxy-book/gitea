@@ -11,16 +11,15 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/go-xorm/xorm"
-	uuid "github.com/satori/go.uuid"
-
 	"code.gitea.io/gitea/modules/secret"
 	"code.gitea.io/gitea/modules/setting"
-	"code.gitea.io/gitea/modules/util"
+	"code.gitea.io/gitea/modules/timeutil"
 
-	"github.com/Unknwon/com"
 	"github.com/dgrijalva/jwt-go"
+	uuid "github.com/satori/go.uuid"
+	"github.com/unknwon/com"
 	"golang.org/x/crypto/bcrypt"
+	"xorm.io/xorm"
 )
 
 // OAuth2Application represents an OAuth2 client (RFC 6749)
@@ -36,8 +35,8 @@ type OAuth2Application struct {
 
 	RedirectURIs []string `xorm:"redirect_uris JSON TEXT"`
 
-	CreatedUnix util.TimeStamp `xorm:"INDEX created"`
-	UpdatedUnix util.TimeStamp `xorm:"INDEX updated"`
+	CreatedUnix timeutil.TimeStamp `xorm:"INDEX created"`
+	UpdatedUnix timeutil.TimeStamp `xorm:"INDEX updated"`
 }
 
 // TableName sets the table name to `oauth2_application`
@@ -197,18 +196,34 @@ type UpdateOAuth2ApplicationOptions struct {
 }
 
 // UpdateOAuth2Application updates an oauth2 application
-func UpdateOAuth2Application(opts UpdateOAuth2ApplicationOptions) error {
-	return updateOAuth2Application(x, opts)
+func UpdateOAuth2Application(opts UpdateOAuth2ApplicationOptions) (*OAuth2Application, error) {
+	sess := x.NewSession()
+	if err := sess.Begin(); err != nil {
+		return nil, err
+	}
+	defer sess.Close()
+
+	app, err := getOAuth2ApplicationByID(sess, opts.ID)
+	if err != nil {
+		return nil, err
+	}
+	if app.UID != opts.UserID {
+		return nil, fmt.Errorf("UID missmatch")
+	}
+
+	app.Name = opts.Name
+	app.RedirectURIs = opts.RedirectURIs
+
+	if err = updateOAuth2Application(sess, app); err != nil {
+		return nil, err
+	}
+	app.ClientSecret = ""
+
+	return app, sess.Commit()
 }
 
-func updateOAuth2Application(e Engine, opts UpdateOAuth2ApplicationOptions) error {
-	app := &OAuth2Application{
-		ID:           opts.ID,
-		UID:          opts.UserID,
-		Name:         opts.Name,
-		RedirectURIs: opts.RedirectURIs,
-	}
-	if _, err := e.ID(opts.ID).Update(app); err != nil {
+func updateOAuth2Application(e Engine, app *OAuth2Application) error {
+	if _, err := e.ID(app.ID).Update(app); err != nil {
 		return err
 	}
 	return nil
@@ -253,6 +268,23 @@ func DeleteOAuth2Application(id, userid int64) error {
 	return sess.Commit()
 }
 
+// ListOAuth2Applications returns a list of oauth2 applications belongs to given user.
+func ListOAuth2Applications(uid int64, listOptions ListOptions) ([]*OAuth2Application, error) {
+	sess := x.
+		Where("uid=?", uid).
+		Desc("id")
+
+	if listOptions.Page != 0 {
+		sess = listOptions.setSessionPagination(sess)
+
+		apps := make([]*OAuth2Application, 0, listOptions.PageSize)
+		return apps, sess.Find(&apps)
+	}
+
+	apps := make([]*OAuth2Application, 0, 5)
+	return apps, sess.Find(&apps)
+}
+
 //////////////////////////////////////////////////////
 
 // OAuth2AuthorizationCode is a code to obtain an access token in combination with the client secret once. It has a limited lifetime.
@@ -264,7 +296,7 @@ type OAuth2AuthorizationCode struct {
 	CodeChallenge       string
 	CodeChallengeMethod string
 	RedirectURI         string
-	ValidUntil          util.TimeStamp `xorm:"index"`
+	ValidUntil          timeutil.TimeStamp `xorm:"index"`
 }
 
 // TableName sets the table name to `oauth2_authorization_code`
@@ -348,8 +380,8 @@ type OAuth2Grant struct {
 	Application   *OAuth2Application `xorm:"-"`
 	ApplicationID int64              `xorm:"INDEX unique(user_application)"`
 	Counter       int64              `xorm:"NOT NULL DEFAULT 1"`
-	CreatedUnix   util.TimeStamp     `xorm:"created"`
-	UpdatedUnix   util.TimeStamp     `xorm:"updated"`
+	CreatedUnix   timeutil.TimeStamp `xorm:"created"`
+	UpdatedUnix   timeutil.TimeStamp `xorm:"updated"`
 }
 
 // TableName sets the table name to `oauth2_grant`

@@ -9,11 +9,11 @@ import (
 	"crypto/subtle"
 	"time"
 
-	gouuid "github.com/satori/go.uuid"
-
 	"code.gitea.io/gitea/modules/base"
 	"code.gitea.io/gitea/modules/generate"
-	"code.gitea.io/gitea/modules/util"
+	"code.gitea.io/gitea/modules/timeutil"
+
+	gouuid "github.com/satori/go.uuid"
 )
 
 // AccessToken represents a personal access token.
@@ -26,16 +26,16 @@ type AccessToken struct {
 	TokenSalt      string
 	TokenLastEight string `xorm:"token_last_eight"`
 
-	CreatedUnix       util.TimeStamp `xorm:"INDEX created"`
-	UpdatedUnix       util.TimeStamp `xorm:"INDEX updated"`
-	HasRecentActivity bool           `xorm:"-"`
-	HasUsed           bool           `xorm:"-"`
+	CreatedUnix       timeutil.TimeStamp `xorm:"INDEX created"`
+	UpdatedUnix       timeutil.TimeStamp `xorm:"INDEX updated"`
+	HasRecentActivity bool               `xorm:"-"`
+	HasUsed           bool               `xorm:"-"`
 }
 
 // AfterLoad is invoked from XORM after setting the values of all fields of this object.
 func (t *AccessToken) AfterLoad() {
 	t.HasUsed = t.UpdatedUnix > t.CreatedUnix
-	t.HasRecentActivity = t.UpdatedUnix.AddDuration(7*24*time.Hour) > util.TimeStampNow()
+	t.HasRecentActivity = t.UpdatedUnix.AddDuration(7*24*time.Hour) > timeutil.TimeStampNow()
 }
 
 // NewAccessToken creates new access token.
@@ -77,13 +77,26 @@ func GetAccessTokenBySHA(token string) (*AccessToken, error) {
 	return nil, ErrAccessTokenNotExist{token}
 }
 
+// AccessTokenByNameExists checks if a token name has been used already by a user.
+func AccessTokenByNameExists(token *AccessToken) (bool, error) {
+	return x.Table("access_token").Where("name = ?", token.Name).And("uid = ?", token.UID).Exist()
+}
+
 // ListAccessTokens returns a list of access tokens belongs to given user.
-func ListAccessTokens(uid int64) ([]*AccessToken, error) {
-	tokens := make([]*AccessToken, 0, 5)
-	return tokens, x.
+func ListAccessTokens(uid int64, listOptions ListOptions) ([]*AccessToken, error) {
+	sess := x.
 		Where("uid=?", uid).
-		Desc("id").
-		Find(&tokens)
+		Desc("id")
+
+	if listOptions.Page != 0 {
+		sess = listOptions.setSessionPagination(sess)
+
+		tokens := make([]*AccessToken, 0, listOptions.PageSize)
+		return tokens, sess.Find(&tokens)
+	}
+
+	tokens := make([]*AccessToken, 0, 5)
+	return tokens, sess.Find(&tokens)
 }
 
 // UpdateAccessToken updates information of access token.
